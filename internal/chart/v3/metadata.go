@@ -148,6 +148,21 @@ func (md *Metadata) Validate() error {
 		}
 		dependencies[key] = dependency
 	}
+
+	// Cross-validate DependsOn references: each entry must refer to a known
+	// sibling dependency name or alias.
+	for _, dependency := range md.Dependencies {
+		for _, ref := range dependency.DependsOn {
+			if dependencies[ref] == nil {
+				depName := dependency.Name
+				if dependency.Alias != "" {
+					depName = dependency.Alias
+				}
+				return ValidationErrorf("dependency %q has depends-on reference %q which is not a known dependency name or alias", depName, ref)
+			}
+		}
+	}
+
 	return nil
 }
 

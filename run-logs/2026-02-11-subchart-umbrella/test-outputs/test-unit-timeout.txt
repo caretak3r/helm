@@ -1,0 +1,31 @@
+==> Running unit tests <==
+go test  -run . ./... -shuffle=on -count=1
+ok  	helm.sh/helm/v4/cmd/helm	3.786s
+ok  	helm.sh/helm/v4/internal/chart/v3	0.896s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint	1.746s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint/rules	2.045s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint/support	2.851s
+ok  	helm.sh/helm/v4/internal/chart/v3/loader	3.692s
+ok  	helm.sh/helm/v4/internal/chart/v3/util	2.778s
+ok  	helm.sh/helm/v4/internal/cli/output	3.008s
+ok  	helm.sh/helm/v4/internal/copystructure	1.045s
+ok  	helm.sh/helm/v4/internal/fileutil	1.207s
+?   	helm.sh/helm/v4/internal/gates	[no test files]
+ok  	helm.sh/helm/v4/internal/logging	1.356s
+ok  	helm.sh/helm/v4/internal/monocular	2.275s
+ok  	helm.sh/helm/v4/internal/plugin	5.219s
+?   	helm.sh/helm/v4/internal/plugin/cache	[no test files]
+ok  	helm.sh/helm/v4/internal/plugin/installer	5.136s
+?   	helm.sh/helm/v4/internal/plugin/schema	[no test files]
+ok  	helm.sh/helm/v4/internal/resolver	3.717s
+ok  	helm.sh/helm/v4/internal/statusreaders	3.327s
+ok  	helm.sh/helm/v4/internal/sympath	2.967s
+?   	helm.sh/helm/v4/internal/test	[no test files]
+?   	helm.sh/helm/v4/internal/test/ensure	[no test files]
+ok  	helm.sh/helm/v4/internal/third_party/dep/fs	3.753s
+?   	helm.sh/helm/v4/internal/third_party/k8s.io/kubernetes/deployment/util	[no test files]
+ok  	helm.sh/helm/v4/internal/tlsutil	3.754s
+ok  	helm.sh/helm/v4/internal/urlutil	3.779s
+ok  	helm.sh/helm/v4/internal/version	3.386s
+
+Command timed out after 60 seconds.

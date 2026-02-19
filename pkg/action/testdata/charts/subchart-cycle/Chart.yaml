@@ -1,0 +1,15 @@
+apiVersion: v2
+name: subchart-cycle
+version: 1.0.0
+description: Test chart with cyclic subchart dependencies (should fail)
+dependencies:
+  - name: a
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - b
+  - name: b
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - a

@@ -41,4 +41,8 @@ type Accessor interface {
 type DependencyAccessor interface {
 	Name() string
 	Alias() string
+	// DependsOn returns the list of sibling dependency names (or aliases)
+	// that must be deployed before this one. Returns nil for chart types
+	// that do not support subchart sequencing (e.g. v2 charts).
+	DependsOn() []string
 }

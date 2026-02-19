@@ -29,6 +29,7 @@ import (
 	"helm.sh/helm/v4/pkg/kube"
 	kubefake "helm.sh/helm/v4/pkg/kube/fake"
 	"helm.sh/helm/v4/pkg/release/common"
+	"helm.sh/helm/v4/pkg/sequencing"
 )
 
 func uninstallAction(t *testing.T) *Uninstall {
@@ -206,4 +207,82 @@ func TestUninstall_WaitOptionsPassedDownstream(t *testing.T) {
 
 	// Verify that WaitOptions were passed to GetWaiter
 	is.NotEmpty(failer.RecordedWaitOptions, "WaitOptions should be passed to GetWaiter")
+}
+
+func TestUninstallRelease_OrderedTeardown(t *testing.T) {
+	is := assert.New(t)
+
+	unAction := uninstallAction(t)
+	unAction.DisableHooks = true
+
+	// Build sequencing metadata for a release (db → cache → web → parent)
+	meta := &sequencing.SequencingMetadata{
+		SubchartOrder: [][]string{{"db"}, {"cache"}, {"web"}, {"myapp"}},
+		Dependencies: map[string][]string{
+			"cache":  {"db"},
+			"web":    {"cache"},
+			"myapp":  {"db", "cache", "web"},
+		},
+	}
+	raw, err := meta.Marshal()
+	require.NoError(t, err)
+
+	// Create a release with sequencing metadata
+	rel := releaseStub()
+	rel.Name = "ordered-teardown"
+	rel.Info.Status = common.StatusDeployed
+	rel.SequencingMetadata = raw
+	rel.Manifest = `---
+# Source: myapp/charts/db/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+---
+# Source: myapp/charts/cache/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache
+---
+# Source: myapp/charts/web/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+---
+# Source: myapp/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp`
+
+	require.NoError(t, unAction.cfg.Releases.Create(rel))
+
+	res, err := unAction.Run(rel.Name)
+	is.NoError(err)
+	is.NotNil(res)
+	resRel, err := releaserToV1Release(res.Release)
+	is.NoError(err)
+	is.Equal(common.StatusUninstalled, resRel.Info.Status)
+}
+
+func TestUninstallRelease_NoSequencingMetadata(t *testing.T) {
+	// Release without sequencing metadata should uninstall normally
+	is := assert.New(t)
+
+	unAction := uninstallAction(t)
+	unAction.DisableHooks = true
+
+	rel := releaseStub()
+	rel.Name = "no-sequencing"
+	rel.Info.Status = common.StatusDeployed
+	require.NoError(t, unAction.cfg.Releases.Create(rel))
+
+	res, err := unAction.Run(rel.Name)
+	is.NoError(err)
+	is.NotNil(res)
+	resRel, err := releaserToV1Release(res.Release)
+	is.NoError(err)
+	is.Equal(common.StatusUninstalled, resRel.Info.Status)
 }

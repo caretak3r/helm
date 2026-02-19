@@ -1,0 +1,1 @@
+version.BuildInfo{Version:"v4.1+unreleased", GitCommit:"e0b3cc4d4a2d2010c9210d075c8e3f82a7d52d94", GitTreeState:"dirty", GoVersion:"go1.25.7", KubeClientVersion:"v1.35"}

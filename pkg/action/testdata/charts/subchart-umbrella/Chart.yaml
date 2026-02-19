@@ -1,0 +1,24 @@
+apiVersion: v2
+name: subchart-umbrella
+version: 1.0.0
+description: Test chart for creative subchart ordering (HIP-0025)
+dependencies:
+  - name: db
+    version: "1.0.0"
+    repository: ""
+  - name: cache
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - db
+  - name: api
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - db
+      - cache
+  - name: frontend
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - api

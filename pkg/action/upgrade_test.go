@@ -37,6 +37,7 @@ import (
 	"helm.sh/helm/v4/pkg/registry"
 	"helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
@@ -801,4 +802,64 @@ func TestUpgradeRelease_WaitOptionsPassedDownstream(t *testing.T) {
 
 	// Verify that WaitOptions were passed to GetWaiter
 	is.NotEmpty(failer.RecordedWaitOptions, "WaitOptions should be passed to GetWaiter")
+}
+
+func TestUpgradeRelease_OrderedStrategy(t *testing.T) {
+	is := assert.New(t)
+	req := require.New(t)
+
+	upAction := upgradeAction(t)
+
+	// Create an initial deployed release
+	rel := releaseStub()
+	rel.Name = "ordered-upgrade"
+	rel.Info.Status = common.StatusDeployed
+	req.NoError(upAction.cfg.Releases.Create(rel))
+
+	upAction.WaitStrategy = kube.OrderedStrategy
+
+	// Build a chart with subchart ordering: db → cache → api
+	chrt := buildSequencedChart("umbrella",
+		[]string{"db", "cache", "api"},
+		"db:cache,cache:api",
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := upAction.Run(rel.Name, chrt, vals)
+	req.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(common.StatusDeployed, res.Info.Status)
+
+	// Verify sequencing metadata was stored
+	is.NotNil(res.SequencingMetadata, "SequencingMetadata should be set for ordered upgrade")
+
+	meta, err := sequencing.UnmarshalSequencingMetadata(res.SequencingMetadata)
+	is.NoError(err)
+	is.NotNil(meta)
+	is.GreaterOrEqual(len(meta.SubchartOrder), 3, "should have at least 3 batches")
+}
+
+func TestUpgradeRelease_OrderedCycleDetection(t *testing.T) {
+	req := require.New(t)
+
+	upAction := upgradeAction(t)
+
+	rel := releaseStub()
+	rel.Name = "ordered-upgrade-cycle"
+	rel.Info.Status = common.StatusDeployed
+	req.NoError(upAction.cfg.Releases.Create(rel))
+
+	upAction.WaitStrategy = kube.OrderedStrategy
+
+	chrt := buildSequencedChart("cyclic",
+		[]string{"a", "b"},
+		"a:b,b:a",
+	)
+
+	vals := map[string]interface{}{}
+	_, err := upAction.Run(rel.Name, chrt, vals)
+	req.Error(err)
+	req.Contains(err.Error(), "cycle")
 }

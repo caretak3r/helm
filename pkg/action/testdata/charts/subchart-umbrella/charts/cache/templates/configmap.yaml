@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-cache
+  labels:
+    app.kubernetes.io/name: cache
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/order: "2"
+  annotations:
+    helm.sh/depends-on: "db"
+data:
+  role: cache

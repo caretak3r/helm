@@ -41,6 +41,7 @@ import (
 	rcommon "helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
 	releaseutil "helm.sh/helm/v4/pkg/release/v1/util"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
@@ -131,6 +132,8 @@ type Upgrade struct {
 	EnableDNS bool
 	// TakeOwnership will skip the check for helm annotations and adopt all existing resources.
 	TakeOwnership bool
+	// charter holds the original Charter for ordered upgrade DAG building.
+	charter chart.Charter
 }
 
 type resultMessage struct {
@@ -163,6 +166,8 @@ func (u *Upgrade) Run(name string, chart chart.Charter, vals map[string]interfac
 
 // RunWithContext executes the upgrade on the given release with context.
 func (u *Upgrade) RunWithContext(ctx context.Context, name string, ch chart.Charter, vals map[string]interface{}) (ri.Releaser, error) {
+	u.charter = ch // Store for ordered upgrade DAG building
+
 	if err := u.cfg.KubeClient.IsReachable(); err != nil {
 		return nil, err
 	}
@@ -451,6 +456,12 @@ func isReleaseApplyMethodClientSideApply(applyMethod string) bool {
 }
 
 func (u *Upgrade) releasingUpgrade(c chan<- resultMessage, upgradedRelease *release.Release, current kube.ResourceList, target kube.ResourceList, originalRelease *release.Release, serverSideApply bool) {
+	// Branch: if ordered strategy, use DAG-based subchart sequencing
+	if u.WaitStrategy == kube.OrderedStrategy && u.charter != nil {
+		u.releasingOrderedUpgrade(c, upgradedRelease, current, originalRelease, serverSideApply)
+		return
+	}
+
 	// pre-upgrade hooks
 
 	if !u.DisableHooks {
@@ -504,6 +515,139 @@ func (u *Upgrade) releasingUpgrade(c chan<- resultMessage, upgradedRelease *rele
 	if !u.DisableHooks {
 		if err := u.cfg.execHook(upgradedRelease, release.HookPostUpgrade, u.WaitStrategy, u.WaitOptions, u.Timeout, serverSideApply); err != nil {
 			u.reportToPerformUpgrade(c, upgradedRelease, results.Created, fmt.Errorf("post-upgrade hooks failed: %s", err))
+			return
+		}
+	}
+
+	originalRelease.Info.Status = rcommon.StatusSuperseded
+	u.cfg.recordRelease(originalRelease)
+
+	upgradedRelease.Info.Status = rcommon.StatusDeployed
+	if len(u.Description) > 0 {
+		upgradedRelease.Info.Description = u.Description
+	} else {
+		upgradedRelease.Info.Description = "Upgrade complete"
+	}
+	u.reportToPerformUpgrade(c, upgradedRelease, nil, nil)
+}
+
+// releasingOrderedUpgrade performs an upgrade using DAG-based subchart sequencing (HIP-0025).
+func (u *Upgrade) releasingOrderedUpgrade(c chan<- resultMessage, upgradedRelease *release.Release, current kube.ResourceList, originalRelease *release.Release, serverSideApply bool) {
+	// pre-upgrade hooks
+	if !u.DisableHooks {
+		if err := u.cfg.execHook(upgradedRelease, release.HookPreUpgrade, u.WaitStrategy, u.WaitOptions, u.Timeout, serverSideApply); err != nil {
+			u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("pre-upgrade hooks failed: %s", err))
+			return
+		}
+	}
+
+	// Build the subchart DAG
+	dag, err := sequencing.BuildSubchartDAG(u.charter)
+	if err != nil {
+		u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("failed to build subchart DAG: %w", err))
+		return
+	}
+
+	batches, err := dag.TopologicalSort()
+	if err != nil {
+		u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("failed to sort subchart DAG: %w", err))
+		return
+	}
+
+	accessor, err := chart.NewAccessor(u.charter)
+	if err != nil {
+		u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("failed to access chart: %w", err))
+		return
+	}
+	partitions := sequencing.PartitionBySubchart(upgradedRelease.Manifest, accessor.Name())
+
+	// Get waiter
+	var waiter kube.Waiter
+	if wc, supportsOptions := u.cfg.KubeClient.(kube.InterfaceWaitOptions); supportsOptions {
+		waiter, err = wc.GetWaiterWithOptions(u.WaitStrategy, u.WaitOptions...)
+	} else {
+		waiter, err = u.cfg.KubeClient.GetWaiter(u.WaitStrategy)
+	}
+	if err != nil {
+		u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("failed to get waiter: %w", err))
+		return
+	}
+
+	upgradeClientSideFieldManager := isReleaseApplyMethodClientSideApply(originalRelease.ApplyMethod) && serverSideApply
+
+	// Deploy each batch in order
+	for _, batch := range batches {
+		var batchManifest strings.Builder
+		for _, name := range batch {
+			if m, ok := partitions[name]; ok {
+				if batchManifest.Len() > 0 {
+					batchManifest.WriteString("\n---\n")
+				}
+				batchManifest.WriteString(m)
+			}
+		}
+
+		if batchManifest.Len() == 0 {
+			continue
+		}
+
+		batchTarget, err := u.cfg.KubeClient.Build(strings.NewReader(batchManifest.String()), false)
+		if err != nil {
+			u.cfg.recordRelease(originalRelease)
+			u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("unable to build resources for batch %v: %w", batch, err))
+			return
+		}
+
+		if len(batchTarget) == 0 {
+			continue
+		}
+
+		// Filter current resources for this batch
+		batchCurrent := filterResourceList(current, batchTarget)
+
+		results, err := u.cfg.KubeClient.Update(
+			batchCurrent,
+			batchTarget,
+			kube.ClientUpdateOptionForceReplace(u.ForceReplace),
+			kube.ClientUpdateOptionServerSideApply(serverSideApply, u.ForceConflicts),
+			kube.ClientUpdateOptionUpgradeClientSideFieldManager(upgradeClientSideFieldManager))
+		if err != nil {
+			u.cfg.recordRelease(originalRelease)
+			u.reportToPerformUpgrade(c, upgradedRelease, results.Created, err)
+			return
+		}
+
+		// Wait for batch readiness
+		if u.WaitForJobs {
+			if err := waiter.WaitWithJobs(batchTarget, u.Timeout); err != nil {
+				u.cfg.recordRelease(originalRelease)
+				u.reportToPerformUpgrade(c, upgradedRelease, results.Created, err)
+				return
+			}
+		} else {
+			if err := waiter.Wait(batchTarget, u.Timeout); err != nil {
+				u.cfg.recordRelease(originalRelease)
+				u.reportToPerformUpgrade(c, upgradedRelease, results.Created, err)
+				return
+			}
+		}
+
+		u.cfg.Logger().Debug("batch upgraded and ready", "subcharts", batch)
+	}
+
+	// Store sequencing metadata
+	meta := &sequencing.SequencingMetadata{
+		SubchartOrder: batches,
+		Dependencies:  dag.Edges(),
+	}
+	if raw, err := meta.Marshal(); err == nil {
+		upgradedRelease.SequencingMetadata = raw
+	}
+
+	// post-upgrade hooks
+	if !u.DisableHooks {
+		if err := u.cfg.execHook(upgradedRelease, release.HookPostUpgrade, u.WaitStrategy, u.WaitOptions, u.Timeout, serverSideApply); err != nil {
+			u.reportToPerformUpgrade(c, upgradedRelease, kube.ResourceList{}, fmt.Errorf("post-upgrade hooks failed: %s", err))
 			return
 		}
 	}

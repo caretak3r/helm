@@ -24,7 +24,7 @@ import "time"
 type Dependency struct {
 	// Name is the name of the dependency.
 	//
-	// This must mach the name in the dependency's Chart.yaml.
+	// This must match the name in the dependency's Chart.yaml.
 	Name string `json:"name" yaml:"name"`
 	// Version is the version (range) of this chart.
 	//
@@ -47,6 +47,9 @@ type Dependency struct {
 	ImportValues []any `json:"import-values,omitempty" yaml:"import-values,omitempty"`
 	// Alias usable alias to be used for the chart
 	Alias string `json:"alias,omitempty" yaml:"alias,omitempty"`
+	// DependsOn is a list of sibling dependency names (or aliases) that must
+	// be deployed and ready before this dependency. Used for subchart sequencing (HIP-0025).
+	DependsOn []string `json:"depends-on,omitempty" yaml:"depends-on,omitempty"`
 }
 
 // Validate checks for common problems with the dependency datastructure in
@@ -65,6 +68,9 @@ func (d *Dependency) Validate() error {
 	}
 	if d.Alias != "" && !aliasNameFormat.MatchString(d.Alias) {
 		return ValidationErrorf("dependency %q has disallowed characters in the alias", d.Name)
+	}
+	for i := range d.DependsOn {
+		d.DependsOn[i] = sanitizeString(d.DependsOn[i])
 	}
 	return nil
 }

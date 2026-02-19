@@ -1,0 +1,4 @@
+apiVersion: v2
+name: cache
+version: 1.0.0
+description: Cache subchart dependent on db

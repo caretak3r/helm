@@ -42,3 +42,29 @@ func TestValidateDependency(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDependencyDependsOn(t *testing.T) {
+	dep := &Dependency{
+		Name:      "example",
+		DependsOn: []string{"foo", "bar"},
+	}
+	if err := dep.Validate(); err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if len(dep.DependsOn) != 2 {
+		t.Errorf("Expected 2 depends-on entries, got %d", len(dep.DependsOn))
+	}
+}
+
+func TestValidateDependencyDependsOnSanitization(t *testing.T) {
+	dep := &Dependency{
+		Name:      "example",
+		DependsOn: []string{" foo\t", "\nbar "},
+	}
+	if err := dep.Validate(); err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if dep.DependsOn[0] != " foo " {
+		t.Errorf("Expected sanitized DependsOn[0], got %q", dep.DependsOn[0])
+	}
+}

@@ -51,6 +51,11 @@ func (r *v2DependencyAccessor) Alias() string {
 	return r.dep.Alias
 }
 
+// DependsOn returns nil for v2 charts — subchart sequencing is not supported.
+func (r *v2DependencyAccessor) DependsOn() []string {
+	return nil
+}
+
 type v3DependencyAccessor struct {
 	dep *v3chart.Dependency
 }
@@ -61,4 +66,10 @@ func (r *v3DependencyAccessor) Name() string {
 
 func (r *v3DependencyAccessor) Alias() string {
 	return r.dep.Alias
+}
+
+// DependsOn returns the list of sibling dependency names/aliases that must
+// be deployed before this one (HIP-0025 subchart sequencing).
+func (r *v3DependencyAccessor) DependsOn() []string {
+	return r.dep.DependsOn
 }

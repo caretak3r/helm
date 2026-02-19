@@ -1,0 +1,18 @@
+apiVersion: v2
+name: subchart-sequencing
+version: 1.0.0
+description: Test chart for subchart sequencing (HIP-0025)
+dependencies:
+  - name: db
+    version: "1.0.0"
+    repository: ""
+  - name: cache
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - db
+  - name: web
+    version: "1.0.0"
+    repository: ""
+    depends-on:
+      - cache

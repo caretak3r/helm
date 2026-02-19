@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-umbrella
+data:
+  chart: subchart-umbrella
+  order: "db -> cache -> api -> frontend"
+  depends-on.db: ""
+  depends-on.cache: "db"
+  depends-on.api: "db,cache"
+  depends-on.frontend: "api"

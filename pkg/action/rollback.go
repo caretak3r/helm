@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +30,7 @@ import (
 	"helm.sh/helm/v4/pkg/kube"
 	"helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
@@ -187,8 +190,9 @@ func (r *Rollback) prepareRollback(name string) (*release.Release, *release.Rele
 		Version:     currentRelease.Version + 1,
 		Labels:      previousRelease.Labels,
 		Manifest:    previousRelease.Manifest,
-		Hooks:       previousRelease.Hooks,
-		ApplyMethod: string(determineReleaseSSApplyMethod(serverSideApply)),
+		Hooks:              previousRelease.Hooks,
+		ApplyMethod:        string(determineReleaseSSApplyMethod(serverSideApply)),
+		SequencingMetadata: previousRelease.SequencingMetadata,
 	}
 
 	return currentRelease, targetRelease, serverSideApply, nil
@@ -198,6 +202,11 @@ func (r *Rollback) performRollback(currentRelease, targetRelease *release.Releas
 	if isDryRun(r.DryRunStrategy) {
 		r.cfg.Logger().Debug("dry run", "name", targetRelease.Name)
 		return targetRelease, nil
+	}
+
+	// If the target release has sequencing metadata, use ordered rollback
+	if len(targetRelease.SequencingMetadata) > 0 {
+		return r.performOrderedRollback(currentRelease, targetRelease, serverSideApply)
 	}
 
 	current, err := r.cfg.KubeClient.Build(bytes.NewBufferString(currentRelease.Manifest), false)
@@ -302,5 +311,151 @@ func (r *Rollback) performRollback(currentRelease, targetRelease *release.Releas
 
 	targetRelease.Info.Status = common.StatusDeployed
 
+	return targetRelease, nil
+}
+
+// performOrderedRollback rolls back using the DAG order stored in the target
+// release's SequencingMetadata. Resources are applied in forward topological
+// order (same as the original install).
+func (r *Rollback) performOrderedRollback(currentRelease, targetRelease *release.Release, serverSideApply bool) (*release.Release, error) {
+	meta, err := sequencing.UnmarshalSequencingMetadata(targetRelease.SequencingMetadata)
+	if err != nil {
+		return targetRelease, fmt.Errorf("failed to unmarshal sequencing metadata: %w", err)
+	}
+
+	dag, err := sequencing.ReconstructDAG(meta)
+	if err != nil {
+		return targetRelease, fmt.Errorf("failed to reconstruct DAG: %w", err)
+	}
+
+	batches, err := dag.TopologicalSort()
+	if err != nil {
+		return targetRelease, fmt.Errorf("failed to sort DAG: %w", err)
+	}
+
+	// Determine parent name from the last batch
+	var parentName string
+	if len(meta.SubchartOrder) > 0 {
+		lastBatch := meta.SubchartOrder[len(meta.SubchartOrder)-1]
+		if len(lastBatch) > 0 {
+			parentName = lastBatch[0]
+		}
+	}
+
+	partitions := sequencing.PartitionBySubchart(targetRelease.Manifest, parentName)
+
+	// pre-rollback hooks
+	if !r.DisableHooks {
+		if err := r.cfg.execHook(targetRelease, release.HookPreRollback, r.WaitStrategy, r.WaitOptions, r.Timeout, serverSideApply); err != nil {
+			return targetRelease, err
+		}
+	}
+
+	// Get waiter
+	var waiter kube.Waiter
+	if c, supportsOptions := r.cfg.KubeClient.(kube.InterfaceWaitOptions); supportsOptions {
+		waiter, err = c.GetWaiterWithOptions(r.WaitStrategy, r.WaitOptions...)
+	} else {
+		waiter, err = r.cfg.KubeClient.GetWaiter(r.WaitStrategy)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("unable to get waiter: %w", err)
+	}
+
+	current, err := r.cfg.KubeClient.Build(bytes.NewBufferString(currentRelease.Manifest), false)
+	if err != nil {
+		return targetRelease, fmt.Errorf("unable to build kubernetes objects from current release manifest: %w", err)
+	}
+
+	for _, batch := range batches {
+		var batchManifest strings.Builder
+		for _, name := range batch {
+			if m, ok := partitions[name]; ok {
+				if batchManifest.Len() > 0 {
+					batchManifest.WriteString("\n---\n")
+				}
+				batchManifest.WriteString(m)
+			}
+		}
+
+		if batchManifest.Len() == 0 {
+			continue
+		}
+
+		batchTarget, err := r.cfg.KubeClient.Build(strings.NewReader(batchManifest.String()), false)
+		if err != nil {
+			return targetRelease, fmt.Errorf("unable to build resources for batch %v: %w", batch, err)
+		}
+
+		if len(batchTarget) == 0 {
+			continue
+		}
+
+		if err := batchTarget.Visit(setMetadataVisitor(targetRelease.Name, targetRelease.Namespace, true)); err != nil {
+			return targetRelease, err
+		}
+
+		batchCurrent := filterResourceList(current, batchTarget)
+
+		_, err = r.cfg.KubeClient.Update(
+			batchCurrent,
+			batchTarget,
+			kube.ClientUpdateOptionForceReplace(r.ForceReplace),
+			kube.ClientUpdateOptionServerSideApply(serverSideApply, r.ForceConflicts),
+			kube.ClientUpdateOptionThreeWayMergeForUnstructured(false),
+			kube.ClientUpdateOptionUpgradeClientSideFieldManager(true))
+		if err != nil {
+			msg := fmt.Sprintf("Rollback %q failed: %s", targetRelease.Name, err)
+			r.cfg.Logger().Warn(msg)
+			currentRelease.Info.Status = common.StatusSuperseded
+			targetRelease.Info.Status = common.StatusFailed
+			targetRelease.Info.Description = msg
+			r.cfg.recordRelease(currentRelease)
+			r.cfg.recordRelease(targetRelease)
+			return targetRelease, err
+		}
+
+		// Wait for batch readiness
+		if r.WaitForJobs {
+			if err := waiter.WaitWithJobs(batchTarget, r.Timeout); err != nil {
+				targetRelease.SetStatus(common.StatusFailed, fmt.Sprintf("Release %q failed: %s", targetRelease.Name, err.Error()))
+				r.cfg.recordRelease(currentRelease)
+				r.cfg.recordRelease(targetRelease)
+				return targetRelease, fmt.Errorf("release %s failed: %w", targetRelease.Name, err)
+			}
+		} else {
+			if err := waiter.Wait(batchTarget, r.Timeout); err != nil {
+				targetRelease.SetStatus(common.StatusFailed, fmt.Sprintf("Release %q failed: %s", targetRelease.Name, err.Error()))
+				r.cfg.recordRelease(currentRelease)
+				r.cfg.recordRelease(targetRelease)
+				return targetRelease, fmt.Errorf("release %s failed: %w", targetRelease.Name, err)
+			}
+		}
+
+		slog.Debug("batch rolled back and ready", "subcharts", batch)
+	}
+
+	// post-rollback hooks
+	if !r.DisableHooks {
+		if err := r.cfg.execHook(targetRelease, release.HookPostRollback, r.WaitStrategy, r.WaitOptions, r.Timeout, serverSideApply); err != nil {
+			return targetRelease, err
+		}
+	}
+
+	deployed, err := r.cfg.Releases.DeployedAll(currentRelease.Name)
+	if err != nil && !errors.Is(err, driver.ErrNoDeployedReleases) {
+		return nil, err
+	}
+	for _, reli := range deployed {
+		rel, err := releaserToV1Release(reli)
+		if err != nil {
+			return nil, err
+		}
+		r.cfg.Logger().Debug("superseding previous deployment", "version", rel.Version)
+		rel.Info.Status = common.StatusSuperseded
+		r.cfg.recordRelease(rel)
+	}
+
+	targetRelease.Info.Status = common.StatusDeployed
 	return targetRelease, nil
 }

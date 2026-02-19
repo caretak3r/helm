@@ -27,6 +27,7 @@ import (
 
 	"helm.sh/helm/v4/pkg/kube"
 	kubefake "helm.sh/helm/v4/pkg/kube/fake"
+	"helm.sh/helm/v4/pkg/sequencing"
 )
 
 func TestNewRollback(t *testing.T) {
@@ -82,4 +83,58 @@ func TestRollback_WaitOptionsPassedDownstream(t *testing.T) {
 
 	// Verify that WaitOptions were passed to GetWaiter
 	is.NotEmpty(failer.RecordedWaitOptions, "WaitOptions should be passed to GetWaiter")
+}
+
+func TestRollback_PreservesSequencingMetadata(t *testing.T) {
+	is := assert.New(t)
+	config := actionConfigFixture(t)
+
+	// Create version 1 with sequencing metadata
+	meta := &sequencing.SequencingMetadata{
+		SubchartOrder: [][]string{{"db"}, {"cache"}, {"web"}, {"parent"}},
+		Dependencies: map[string][]string{
+			"cache":  {"db"},
+			"web":    {"cache"},
+			"parent": {"db", "cache", "web"},
+		},
+	}
+	raw, err := meta.Marshal()
+	require.NoError(t, err)
+
+	rel1 := releaseStub()
+	rel1.Name = "rollback-sequencing"
+	rel1.Info.Status = "deployed"
+	rel1.ApplyMethod = "csa"
+	rel1.SequencingMetadata = raw
+	require.NoError(t, config.Releases.Create(rel1))
+
+	// Create version 2 (current, no sequencing metadata)
+	rel2 := releaseStub()
+	rel2.Name = "rollback-sequencing"
+	rel2.Version = 2
+	rel2.Info.Status = "deployed"
+	rel2.ApplyMethod = "csa"
+	rel2.SequencingMetadata = nil
+	require.NoError(t, config.Releases.Create(rel2))
+
+	// Rollback to version 1
+	client := NewRollback(config)
+	client.Version = 1
+	client.WaitStrategy = kube.StatusWatcherStrategy
+	client.ServerSideApply = "auto"
+
+	err = client.Run(rel1.Name)
+	is.NoError(err)
+
+	// Verify the rolled-back release (version 3) gets created
+	rolledBacki, err := config.Releases.Get(rel1.Name, 3)
+	is.NoError(err)
+	rolledBack, err := releaserToV1Release(rolledBacki)
+	is.NoError(err)
+
+	// The rolled-back release should have the sequencing metadata from v1
+	is.NotNil(rolledBack.SequencingMetadata, "rolled back release should preserve sequencing metadata")
+	restoredMeta, err := sequencing.UnmarshalSequencingMetadata(rolledBack.SequencingMetadata)
+	is.NoError(err)
+	is.Equal(meta.SubchartOrder, restoredMeta.SubchartOrder)
 }

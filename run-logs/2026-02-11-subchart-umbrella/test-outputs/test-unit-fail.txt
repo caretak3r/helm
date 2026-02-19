@@ -1,0 +1,150 @@
+==> Running unit tests <==
+go test  -run . ./... -shuffle=on -count=1
+ok  	helm.sh/helm/v4/cmd/helm	0.695s
+ok  	helm.sh/helm/v4/internal/chart/v3	1.040s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint	2.209s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint/rules	1.373s
+ok  	helm.sh/helm/v4/internal/chart/v3/lint/support	1.859s
+ok  	helm.sh/helm/v4/internal/chart/v3/loader	1.600s
+ok  	helm.sh/helm/v4/internal/chart/v3/util	2.940s
+ok  	helm.sh/helm/v4/internal/cli/output	3.112s
+ok  	helm.sh/helm/v4/internal/copystructure	0.778s
+ok  	helm.sh/helm/v4/internal/fileutil	2.328s
+?   	helm.sh/helm/v4/internal/gates	[no test files]
+ok  	helm.sh/helm/v4/internal/logging	1.718s
+ok  	helm.sh/helm/v4/internal/monocular	3.539s
+ok  	helm.sh/helm/v4/internal/plugin	3.375s
+?   	helm.sh/helm/v4/internal/plugin/cache	[no test files]
+ok  	helm.sh/helm/v4/internal/plugin/installer	7.645s
+?   	helm.sh/helm/v4/internal/plugin/schema	[no test files]
+ok  	helm.sh/helm/v4/internal/resolver	3.548s
+ok  	helm.sh/helm/v4/internal/statusreaders	4.330s
+ok  	helm.sh/helm/v4/internal/sympath	3.911s
+?   	helm.sh/helm/v4/internal/test	[no test files]
+?   	helm.sh/helm/v4/internal/test/ensure	[no test files]
+ok  	helm.sh/helm/v4/internal/third_party/dep/fs	4.552s
+?   	helm.sh/helm/v4/internal/third_party/k8s.io/kubernetes/deployment/util	[no test files]
+ok  	helm.sh/helm/v4/internal/tlsutil	4.659s
+ok  	helm.sh/helm/v4/internal/urlutil	4.575s
+ok  	helm.sh/helm/v4/internal/version	4.399s
+-test.shuffle 1770864025921839000
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallReleaseOutputDir3506983984/001/hello/templates/rbac
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallReleaseOutputDir3506983984/001/hello/templates/rbac
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallReleaseOutputDir3506983984/001/hello/templates/goodbye
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallReleaseOutputDir3506983984/001/hello/templates/hello
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallReleaseOutputDir3506983984/001/hello/templates/with-partials
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallOutputDirWithReleaseName1760146975/001/madra/hello/templates/rbac
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallOutputDirWithReleaseName1760146975/001/madra/hello/templates/rbac
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallOutputDirWithReleaseName1760146975/001/madra/hello/templates/goodbye
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallOutputDirWithReleaseName1760146975/001/madra/hello/templates/hello
+wrote /var/folders/f6/hg0_ltnj1d7cgf9qw82xgsrh0000gn/T/TestInstallOutputDirWithReleaseName1760146975/001/madra/hello/templates/with-partials
+--- FAIL: TestPullRun_ChartNotFound (0.12s)
+    pull_test.go:63:
+        Error Trace: /Users/rohit/Documents/helm/pkg/action/pull_test.go:63
+        Error: Error "no cached repo found. (try 'helm repo update'): open /Users/rohit/Library/Caches/helm/repository/k8s-dashboard-index.yaml: no such file or directory" does not contain "404 Not Found"
+        Test: TestPullRun_ChartNotFound
+FAIL
+FAIL	helm.sh/helm/v4/pkg/action	32.785s
+?   	helm.sh/helm/v4/pkg/chart	[no test files]
+ok  	helm.sh/helm/v4/pkg/chart/common	3.769s
+ok  	helm.sh/helm/v4/pkg/chart/common/util	4.341s
+ok  	helm.sh/helm/v4/pkg/chart/loader	2.715s
+ok  	helm.sh/helm/v4/pkg/chart/loader/archive	5.041s
+ok  	helm.sh/helm/v4/pkg/chart/v2	4.640s
+ok  	helm.sh/helm/v4/pkg/chart/v2/lint	5.368s
+ok  	helm.sh/helm/v4/pkg/chart/v2/lint/rules	5.319s
+ok  	helm.sh/helm/v4/pkg/chart/v2/lint/support	5.153s
+ok  	helm.sh/helm/v4/pkg/chart/v2/loader	4.798s
+ok  	helm.sh/helm/v4/pkg/chart/v2/util	4.659s
+ok  	helm.sh/helm/v4/pkg/cli	4.113s
+?   	helm.sh/helm/v4/pkg/cli/output	[no test files]
+ok  	helm.sh/helm/v4/pkg/cli/values	4.023s
+-test.shuffle 1770864030446613000
+Error: stat /nonexistent/plugin.tgz: no such file or directory
+Usage:
+  verify [PATH] [flags]
+
+Flags:
+  -h, --help             help for verify
+      --keyring string   keyring containing public keys (default "/Users/rohit/.gnupg/pubring.gpg")
+
+level=DEBUG msg="plugin completion file loading" error="file (/Users/rohit/Library/helm/plugins/helm-starter.git/completion.yaml) not provided by plugin. No plugin auto-completion possible"
+level=DEBUG msg="plugin completion file loading" error="file (/Users/rohit/Library/helm/plugins/helmper/completion.yaml) not provided by plugin. No plugin auto-completion possible"
+level=DEBUG msg="original chart version" version=""
+level=DEBUG msg="setting version to >0.0.0"
+level=INFO msg="warning: a valid Helm v3 hash was not found. Checking against Helm v2 hash..."
+--- FAIL: TestDependencyBuildCmdWithHelmV2Hash (0.93s)
+    dependency_build_test.go:161: Output: Hang tight while we grab the latest from your chart repositories...
+        ...Unable to get an update from the "k8s-dashboard" chart repository (https://kubernetes.github.io/dashboard):
+        	failed to fetch https://kubernetes.github.io/dashboard/index.yaml : 404 Not Found
+        ...Successfully got an update from the "wave-k8s" chart repository
+        ...Successfully got an update from the "metrics-server" chart repository
+        ...Successfully got an update from the "clickstack" chart repository
+        ...Successfully got an update from the "kubearmor" chart repository
+        ...Successfully got an update from the "dapr" chart repository
+        ...Successfully got an update from the "ingress-nginx" chart repository
+        ...Successfully got an update from the "gitops-agent" chart repository
+        ...Successfully got an update from the "harbor" chart repository
+        ...Successfully got an update from the "eks" chart repository
+        ...Successfully got an update from the "jetstack" chart repository
+        ...Successfully got an update from the "harness-delegate" chart repository
+        ...Successfully got an update from the "sigstore" chart repository
+        ...Successfully got an update from the "devtron" chart repository
+        ...Successfully got an update from the "prometheus-community" chart repository
+        ...Successfully got an update from the "fairwinds-stable" chart repository
+        Update Complete. ⎈Happy Helming!⎈
+        Error: open /Users/rohit/Library/Caches/helm/repository/k8s-dashboard-index.yaml: no such file or directory
+
+[... output too long to summarize ...]
+
+Error: "verify" requires 1 argument
+
+Usage:  verify [PATH] [flags]
+Usage:
+  verify [PATH] [flags]
+
+Flags:
+  -h, --help             help for verify
+      --keyring string   keyring containing public keys (default "/Users/rohit/.gnupg/pubring.gpg")
+
+FAIL
+FAIL	helm.sh/helm/v4/pkg/cmd	20.794s
+ok  	helm.sh/helm/v4/pkg/cmd/require	2.118s
+ok  	helm.sh/helm/v4/pkg/cmd/search	3.077s
+ok  	helm.sh/helm/v4/pkg/downloader	3.608s
+ok  	helm.sh/helm/v4/pkg/engine	4.188s
+ok  	helm.sh/helm/v4/pkg/gates	3.033s
+ok  	helm.sh/helm/v4/pkg/getter	4.073s
+ok  	helm.sh/helm/v4/pkg/helmpath	4.171s
+?   	helm.sh/helm/v4/pkg/helmpath/xdg	[no test files]
+ok  	helm.sh/helm/v4/pkg/ignore	4.277s
+-test.shuffle 1770864033127856000
+2026/02/11 21:40:45 ERROR job failed job=test-job reason=FailedReason
+2026/02/11 21:40:45 WARN resource exists on cluster but not in original release, using cluster state as baseline namespace=default name=newpod kind=Pod
+2026/02/11 21:40:45 ERROR pod failed pod=pod2
+--- FAIL: TestStatusWaitForDelete (0.00s)
+    --- FAIL: TestStatusWaitForDelete/error_when_not_all_objects_are_deleted (0.01s)
+        statuswait_test.go:353:
+            Error Trace: /Users/rohit/Documents/helm/pkg/kube/statuswait_test.go:353
+            Error: "resource Job/qual/test still exists. status: Current, message: Job Completed. succeeded: 1/1\nresource Pod/ns/current-pod still exists. status: Current, message: Pod is Ready" does not contain "context deadline exceeded"
+            Test: TestStatusWaitForDelete/error_when_not_all_objects_are_deleted
+FAIL
+FAIL	helm.sh/helm/v4/pkg/kube	26.586s
+?   	helm.sh/helm/v4/pkg/kube/fake	[no test files]
+ok  	helm.sh/helm/v4/pkg/postrenderer	3.885s
+ok  	helm.sh/helm/v4/pkg/provenance	3.521s
+ok  	helm.sh/helm/v4/pkg/pusher	13.803s
+ok  	helm.sh/helm/v4/pkg/registry	10.776s
+ok  	helm.sh/helm/v4/pkg/release	3.849s
+?   	helm.sh/helm/v4/pkg/release/common	[no test files]
+ok  	helm.sh/helm/v4/pkg/release/v1	3.848s
+ok  	helm.sh/helm/v4/pkg/release/v1/util	3.977s
+ok  	helm.sh/helm/v4/pkg/repo/v1	5.135s
+ok  	helm.sh/helm/v4/pkg/repo/v1/repotest	3.297s
+ok  	helm.sh/helm/v4/pkg/sequencing	3.513s
+ok  	helm.sh/helm/v4/pkg/storage	3.778s
+ok  	helm.sh/helm/v4/pkg/storage/driver	4.187s
+ok  	helm.sh/helm/v4/pkg/strvals	3.905s
+?   	helm.sh/helm/v4/pkg/uploader	[no test files]
+FAIL
+make: *** [test-unit] Error 1

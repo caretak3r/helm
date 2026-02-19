@@ -199,3 +199,48 @@ func TestValidate_sanitize(t *testing.T) {
 		t.Fatal("maintainer name was not sanitized")
 	}
 }
+
+func TestValidate_dependsOnUnknownRef(t *testing.T) {
+	md := &Metadata{
+		Name:       "test",
+		APIVersion: "v3",
+		Version:    "1.0",
+		Type:       "application",
+		Dependencies: []*Dependency{
+			{Name: "db"},
+			{Name: "web", DependsOn: []string{"db"}},
+		},
+	}
+	// Valid: web depends on known sibling "db"
+	if err := md.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Invalid: web depends on unknown "cache"
+	md.Dependencies[1].DependsOn = []string{"cache"}
+	err := md.Validate()
+	if err == nil {
+		t.Fatal("expected error for unknown depends-on ref")
+	}
+	expected := `validation: dependency "web" has depends-on reference "cache" which is not a known dependency name or alias`
+	if err.Error() != expected {
+		t.Errorf("expected %q, got %q", expected, err.Error())
+	}
+}
+
+func TestValidate_dependsOnUsesAlias(t *testing.T) {
+	md := &Metadata{
+		Name:       "test",
+		APIVersion: "v3",
+		Version:    "1.0",
+		Type:       "application",
+		Dependencies: []*Dependency{
+			{Name: "database", Alias: "db"},
+			{Name: "web", DependsOn: []string{"db"}},
+		},
+	}
+	// Valid: "db" is the alias of "database"
+	if err := md.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}

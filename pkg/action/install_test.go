@@ -54,6 +54,7 @@ import (
 	"helm.sh/helm/v4/pkg/registry"
 	rcommon "helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
@@ -1207,4 +1208,286 @@ func TestInstallRelease_WaitOptionsPassedDownstream(t *testing.T) {
 
 	// Verify that WaitOptions were passed to GetWaiter
 	is.NotEmpty(failer.RecordedWaitOptions, "WaitOptions should be passed to GetWaiter")
+}
+
+// buildSequencedChart builds a v2 chart with subcharts and annotation-based
+// ordering for testing HIP-0025 ordered install.
+func buildSequencedChart(name string, subchartNames []string, annotationVal string) *chart.Chart {
+	modTime := time.Now()
+	c := &chart.Chart{
+		Metadata: &chart.Metadata{
+			APIVersion: "v2",
+			Name:       name,
+			Version:    "1.0.0",
+		},
+		Templates: []*common.File{
+			{Name: "templates/service.yaml", ModTime: modTime, Data: []byte("apiVersion: v1\nkind: Service\nmetadata:\n  name: " + name)},
+		},
+	}
+	if annotationVal != "" {
+		c.Metadata.Annotations = map[string]string{
+			"helm.sh/depends-on/subcharts": annotationVal,
+		}
+	}
+	// Add subcharts as loaded dependencies
+	deps := make([]*chart.Dependency, 0, len(subchartNames))
+	for _, sub := range subchartNames {
+		deps = append(deps, &chart.Dependency{
+			Name:       sub,
+			Version:    "1.0.0",
+			Repository: "",
+		})
+		subChart := &chart.Chart{
+			Metadata: &chart.Metadata{
+				APIVersion: "v2",
+				Name:       sub,
+				Version:    "1.0.0",
+			},
+			Templates: []*common.File{
+				{Name: "templates/deployment.yaml", ModTime: modTime, Data: []byte("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + sub)},
+			},
+		}
+		c.AddDependency(subChart)
+	}
+	c.Metadata.Dependencies = deps
+	return c
+}
+
+func TestInstallRelease_OrderedLinearChain(t *testing.T) {
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "ordered-linear"
+	instAction.WaitStrategy = kube.OrderedStrategy
+
+	// db → cache → web (annotation-based ordering)
+	chrt := buildSequencedChart("myapp",
+		[]string{"db", "cache", "web"},
+		"db:cache,cache:web",
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(chrt, vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+	is.Equal("Install complete", res.Info.Description)
+
+	// Verify sequencing metadata was stored
+	is.NotNil(res.SequencingMetadata, "SequencingMetadata should be set for ordered install")
+
+	meta, err := sequencing.UnmarshalSequencingMetadata(res.SequencingMetadata)
+	is.NoError(err)
+	is.NotNil(meta)
+
+	// db first, then cache, then web, then myapp (parent last)
+	is.GreaterOrEqual(len(meta.SubchartOrder), 3, "should have at least 3 batches")
+
+	// Find db — it should be in the first batch
+	dbBatch := -1
+	for i, batch := range meta.SubchartOrder {
+		for _, n := range batch {
+			if n == "db" {
+				dbBatch = i
+			}
+		}
+	}
+	is.Equal(0, dbBatch, "db should be in first batch")
+
+	// Verify dependency map (edges: from → [to], meaning "from deploys before to")
+	is.Contains(meta.Dependencies, "db")
+	is.Contains(meta.Dependencies["db"], "cache")
+}
+
+func TestInstallRelease_OrderedDiamondDAG(t *testing.T) {
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "ordered-diamond"
+	instAction.WaitStrategy = kube.OrderedStrategy
+
+	// Diamond: db → cache, db → api, cache+api → frontend
+	chrt := buildSequencedChart("umbrella",
+		[]string{"db", "cache", "api", "frontend"},
+		`[{"name":"cache","depends-on":["db"]},{"name":"api","depends-on":["db"]},{"name":"frontend","depends-on":["cache","api"]}]`,
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(chrt, vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+
+	meta, err := sequencing.UnmarshalSequencingMetadata(res.SequencingMetadata)
+	is.NoError(err)
+	is.NotNil(meta)
+
+	// Verify batch structure: db first, then api+cache concurrent, then frontend, then umbrella
+	is.GreaterOrEqual(len(meta.SubchartOrder), 3)
+	is.Contains(meta.SubchartOrder[0], "db")
+	// api and cache should be in the same batch (both depend only on db)
+	found := false
+	for _, batch := range meta.SubchartOrder {
+		if len(batch) == 2 {
+			hasAPI := false
+			hasCache := false
+			for _, n := range batch {
+				if n == "api" {
+					hasAPI = true
+				}
+				if n == "cache" {
+					hasCache = true
+				}
+			}
+			if hasAPI && hasCache {
+				found = true
+			}
+		}
+	}
+	is.True(found, "api and cache should be in the same concurrent batch")
+}
+
+func TestInstallRelease_OrderedCycleDetection(t *testing.T) {
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "ordered-cycle"
+	instAction.WaitStrategy = kube.OrderedStrategy
+
+	// Cycle: a depends on b, b depends on a
+	chrt := buildSequencedChart("cyclic",
+		[]string{"a", "b"},
+		"a:b,b:a",
+	)
+
+	vals := map[string]interface{}{}
+	_, err := instAction.Run(chrt, vals)
+	is.Error(err)
+	is.Contains(err.Error(), "cycle")
+}
+
+func TestInstallRelease_OrderedNoDeps(t *testing.T) {
+	// Chart with subcharts but no ordering annotations — all deploy concurrently
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "ordered-no-deps"
+	instAction.WaitStrategy = kube.OrderedStrategy
+
+	chrt := buildSequencedChart("simple",
+		[]string{"svc1", "svc2", "svc3"},
+		"", // no annotation
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(chrt, vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+
+	meta, err := sequencing.UnmarshalSequencingMetadata(res.SequencingMetadata)
+	is.NoError(err)
+	is.NotNil(meta)
+
+	// All subcharts should be in batch 0 (concurrent), parent in batch 1
+	is.Len(meta.SubchartOrder, 2, "should have 2 batches: all subcharts then parent")
+	is.Len(meta.SubchartOrder[0], 3, "first batch should contain all 3 subcharts")
+}
+
+func TestInstallRelease_OrderedWithoutCharter(t *testing.T) {
+	// Without the charter field set, ordered strategy should fall back to standard install
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "ordered-no-charter"
+	instAction.WaitStrategy = kube.OrderedStrategy
+
+	// Use a plain chart (no subcharts) — the charter will still be set by Run()
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(buildChart(), vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+
+	// Simple chart has no deps, so DAG has only parent node — still succeeds
+	meta, err := sequencing.UnmarshalSequencingMetadata(res.SequencingMetadata)
+	is.NoError(err)
+	is.NotNil(meta)
+	is.Len(meta.SubchartOrder, 1, "single-chart should have 1 batch")
+}
+
+func TestInstallRelease_BackwardCompat_NoOrderedFlag(t *testing.T) {
+	// Ensure standard --wait (watcher) doesn't trigger ordered install
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "compat-watcher"
+	instAction.WaitStrategy = kube.StatusWatcherStrategy
+
+	chrt := buildSequencedChart("myapp",
+		[]string{"db", "cache"},
+		"db:cache",
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(chrt, vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+	// Should NOT have sequencing metadata since we used watcher strategy, not ordered
+	is.Nil(res.SequencingMetadata, "watcher strategy should not store sequencing metadata")
+}
+
+func TestInstallRelease_BackwardCompat_V2ChartNoAnnotations(t *testing.T) {
+	// v2 chart without any sequencing annotations works unchanged
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "compat-v2"
+	instAction.WaitStrategy = kube.HookOnlyStrategy
+
+	vals := map[string]interface{}{}
+	resi, err := instAction.Run(buildChart(withDependency(withName("dep1"))), vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+	is.Nil(res.SequencingMetadata, "hookOnly strategy should not store sequencing metadata")
+}
+
+func TestUpgradeRelease_BackwardCompat_OldReleaseNoSequencing(t *testing.T) {
+	// Old releases without SequencingMetadata upgrade cleanly
+	is := assert.New(t)
+	config := actionConfigFixture(t)
+	upAction := NewUpgrade(config)
+	upAction.Namespace = "spaced"
+
+	// Create an old release with no sequencing metadata
+	rel := releaseStub()
+	rel.Name = "old-release-upgrade"
+	rel.Info.Status = rcommon.StatusDeployed
+	rel.SequencingMetadata = nil
+	require.NoError(t, upAction.cfg.Releases.Create(rel))
+
+	upAction.WaitStrategy = kube.OrderedStrategy
+
+	// Upgrade with ordered strategy using a chart with dependencies
+	chrt := buildSequencedChart("myapp",
+		[]string{"db", "cache"},
+		"db:cache",
+	)
+
+	vals := map[string]interface{}{}
+	resi, err := upAction.Run(rel.Name, chrt, vals)
+	is.NoError(err)
+	res, err := releaserToV1Release(resi)
+	is.NoError(err)
+
+	is.Equal(rcommon.StatusDeployed, res.Info.Status)
+	// Now it should have sequencing metadata
+	is.NotNil(res.SequencingMetadata, "ordered upgrade should store sequencing metadata")
 }

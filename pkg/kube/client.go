@@ -117,6 +117,11 @@ const (
 
 	// HookOnlyStrategy: wait only for hook Pods/Jobs to complete; does not wait for general chart resources.
 	HookOnlyStrategy WaitStrategy = "hookOnly"
+
+	// OrderedStrategy: DAG-based subchart sequencing (HIP-0025).
+	// Subcharts are deployed in topological order; the kube waiter checks per-batch readiness.
+	// Batch orchestration logic lives in the action layer; the kube waiter provides per-batch waiting.
+	OrderedStrategy WaitStrategy = "ordered"
 )
 
 type FieldValidationDirective string
@@ -200,10 +205,14 @@ func (c *Client) GetWaiterWithOptions(strategy WaitStrategy, opts ...WaitOption)
 			return nil, err
 		}
 		return &hookOnlyWaiter{sw: sw}, nil
+	case OrderedStrategy:
+		// Ordered strategy uses the same status watcher for per-batch readiness.
+		// The batch orchestration logic lives in the action layer.
+		return c.newStatusWatcher(opts...)
 	case "":
-		return nil, errors.New("wait strategy not set. Choose one of: " + string(StatusWatcherStrategy) + ", " + string(HookOnlyStrategy) + ", " + string(LegacyStrategy))
+		return nil, errors.New("wait strategy not set. Choose one of: " + string(StatusWatcherStrategy) + ", " + string(HookOnlyStrategy) + ", " + string(LegacyStrategy) + ", " + string(OrderedStrategy))
 	default:
-		return nil, errors.New("unknown wait strategy (s" + string(strategy) + "). Valid values are: " + string(StatusWatcherStrategy) + ", " + string(HookOnlyStrategy) + ", " + string(LegacyStrategy))
+		return nil, errors.New("unknown wait strategy (s" + string(strategy) + "). Valid values are: " + string(StatusWatcherStrategy) + ", " + string(HookOnlyStrategy) + ", " + string(LegacyStrategy) + ", " + string(OrderedStrategy))
 	}
 }
 

@@ -1,0 +1,8 @@
+Release "demo" has been upgraded. Happy Helming!
+NAME: demo
+LAST DEPLOYED: Sat Feb 14 14:35:15 2026
+NAMESPACE: default
+STATUS: deployed
+REVISION: 2
+DESCRIPTION: Upgrade complete
+TEST SUITE: None

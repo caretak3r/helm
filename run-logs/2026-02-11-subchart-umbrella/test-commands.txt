@@ -1,0 +1,7 @@
+/Users/rohit/Documents/helm/bin/helm version
+/Users/rohit/Documents/helm/bin/helm upgrade --install demo /Users/rohit/Documents/helm/pkg/action/testdata/charts/subchart-umbrella --wait=ordered -n default
+/Users/rohit/Documents/helm/bin/helm get manifest demo -n default
+kubectl get deployments -n default | rg "demo-"
+kubectl get configmaps -n default | rg "demo-"
+make test-style
+make test-unit

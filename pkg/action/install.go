@@ -58,6 +58,7 @@ import (
 	release "helm.sh/helm/v4/pkg/release/v1"
 	releaseutil "helm.sh/helm/v4/pkg/release/v1/util"
 	"helm.sh/helm/v4/pkg/repo/v1"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
@@ -133,6 +134,8 @@ type Install struct {
 	// Lock to control raceconditions when the process receives a SIGTERM
 	Lock           sync.Mutex
 	goroutineCount atomic.Int32
+	// charter holds the original Charter for ordered install DAG building.
+	charter ci.Charter
 }
 
 // ChartPathOptions captures common options used for controlling chart paths
@@ -262,6 +265,8 @@ func (i *Install) Run(chrt ci.Charter, vals map[string]interface{}) (ri.Releaser
 // When the task is cancelled through ctx, the function returns and the install
 // proceeds in the background.
 func (i *Install) RunWithContext(ctx context.Context, ch ci.Charter, vals map[string]interface{}) (ri.Releaser, error) {
+	i.charter = ch // Store for ordered install DAG building
+
 	var chrt *chart.Chart
 	switch c := ch.(type) {
 	case *chart.Chart:
@@ -484,6 +489,11 @@ func (i *Install) getGoroutineCount() int32 {
 }
 
 func (i *Install) performInstall(rel *release.Release, toBeAdopted kube.ResourceList, resources kube.ResourceList) (*release.Release, error) {
+	// Branch: if ordered strategy, use DAG-based subchart sequencing
+	if i.WaitStrategy == kube.OrderedStrategy && i.charter != nil {
+		return i.performOrderedInstall(rel, toBeAdopted)
+	}
+
 	var err error
 	// pre-install hooks
 	if !i.DisableHooks {
@@ -556,6 +566,168 @@ func (i *Install) performInstall(rel *release.Release, toBeAdopted kube.Resource
 	}
 
 	return rel, nil
+}
+
+// performOrderedInstall deploys resources in DAG-based subchart order (HIP-0025).
+// Subcharts are deployed in topological batch order, waiting for readiness
+// between batches. The parent chart's own resources are deployed last.
+func (i *Install) performOrderedInstall(rel *release.Release, toBeAdopted kube.ResourceList) (*release.Release, error) {
+	// pre-install hooks (same as standard install)
+	if !i.DisableHooks {
+		if err := i.cfg.execHook(rel, release.HookPreInstall, i.WaitStrategy, i.WaitOptions, i.Timeout, i.ServerSideApply); err != nil {
+			return rel, fmt.Errorf("failed pre-install: %s", err)
+		}
+	}
+
+	// Build the subchart DAG from chart metadata
+	dag, err := sequencing.BuildSubchartDAG(i.charter)
+	if err != nil {
+		return rel, fmt.Errorf("failed to build subchart DAG: %w", err)
+	}
+
+	// Get topological batch order
+	batches, err := dag.TopologicalSort()
+	if err != nil {
+		return rel, fmt.Errorf("failed to sort subchart DAG: %w", err)
+	}
+
+	// Partition manifests by subchart name
+	accessor, err := ci.NewAccessor(i.charter)
+	if err != nil {
+		return rel, fmt.Errorf("failed to access chart: %w", err)
+	}
+	partitions := sequencing.PartitionBySubchart(rel.Manifest, accessor.Name())
+
+	// Get waiter for per-batch readiness
+	var waiter kube.Waiter
+	if c, supportsOptions := i.cfg.KubeClient.(kube.InterfaceWaitOptions); supportsOptions {
+		waiter, err = c.GetWaiterWithOptions(i.WaitStrategy, i.WaitOptions...)
+	} else {
+		waiter, err = i.cfg.KubeClient.GetWaiter(i.WaitStrategy)
+	}
+	if err != nil {
+		return rel, fmt.Errorf("failed to get waiter: %w", err)
+	}
+
+	// Deploy each batch in order
+	for _, batch := range batches {
+		// Collect manifests for this batch
+		var batchManifest strings.Builder
+		for _, name := range batch {
+			if m, ok := partitions[name]; ok {
+				if batchManifest.Len() > 0 {
+					batchManifest.WriteString("\n---\n")
+				}
+				batchManifest.WriteString(m)
+			}
+		}
+
+		if batchManifest.Len() == 0 {
+			continue
+		}
+
+		// Build resources for this batch
+		batchResources, err := i.cfg.KubeClient.Build(strings.NewReader(batchManifest.String()), !i.DisableOpenAPIValidation)
+		if err != nil {
+			return rel, fmt.Errorf("unable to build resources for batch %v: %w", batch, err)
+		}
+
+		if len(batchResources) == 0 {
+			continue
+		}
+
+		// Set metadata on batch resources
+		if err := batchResources.Visit(setMetadataVisitor(rel.Name, rel.Namespace, true)); err != nil {
+			return rel, err
+		}
+
+		// Create/update batch resources
+		if len(toBeAdopted) == 0 {
+			if _, err := i.cfg.KubeClient.Create(
+				batchResources,
+				kube.ClientCreateOptionServerSideApply(i.ServerSideApply, false)); err != nil {
+				return rel, err
+			}
+		} else {
+			// Filter toBeAdopted for this batch
+			batchAdopted := filterResourceList(toBeAdopted, batchResources)
+			if len(batchAdopted) > 0 {
+				updateThreeWayMerge := i.TakeOwnership && !i.ServerSideApply
+				if _, err := i.cfg.KubeClient.Update(
+					batchAdopted,
+					batchResources,
+					kube.ClientUpdateOptionForceReplace(i.ForceReplace),
+					kube.ClientUpdateOptionServerSideApply(i.ServerSideApply, i.ForceConflicts),
+					kube.ClientUpdateOptionThreeWayMergeForUnstructured(updateThreeWayMerge),
+					kube.ClientUpdateOptionUpgradeClientSideFieldManager(true)); err != nil {
+					return rel, err
+				}
+			} else {
+				if _, err := i.cfg.KubeClient.Create(
+					batchResources,
+					kube.ClientCreateOptionServerSideApply(i.ServerSideApply, false)); err != nil {
+					return rel, err
+				}
+			}
+		}
+
+		// Wait for batch readiness
+		if i.WaitForJobs {
+			err = waiter.WaitWithJobs(batchResources, i.Timeout)
+		} else {
+			err = waiter.Wait(batchResources, i.Timeout)
+		}
+		if err != nil {
+			return rel, fmt.Errorf("batch %v failed readiness: %w", batch, err)
+		}
+
+		i.cfg.Logger().Debug("batch deployed and ready", "subcharts", batch)
+	}
+
+	// Store sequencing metadata in the release for rollback
+	meta := &sequencing.SequencingMetadata{
+		SubchartOrder: batches,
+		Dependencies:  dag.Edges(),
+	}
+	if raw, err := meta.Marshal(); err == nil {
+		rel.SequencingMetadata = raw
+	}
+
+	if !i.DisableHooks {
+		if err := i.cfg.execHook(rel, release.HookPostInstall, i.WaitStrategy, i.WaitOptions, i.Timeout, i.ServerSideApply); err != nil {
+			return rel, fmt.Errorf("failed post-install: %s", err)
+		}
+	}
+
+	if len(i.Description) > 0 {
+		rel.SetStatus(rcommon.StatusDeployed, i.Description)
+	} else {
+		rel.SetStatus(rcommon.StatusDeployed, "Install complete")
+	}
+
+	if err := i.recordRelease(rel); err != nil {
+		i.cfg.Logger().Error("failed to record the release", slog.Any("error", err))
+	}
+
+	return rel, nil
+}
+
+// filterResourceList returns resources from source that match any resource in targets
+// by name and kind.
+func filterResourceList(source, targets kube.ResourceList) kube.ResourceList {
+	targetSet := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		key := t.Name + "/" + t.Mapping.GroupVersionKind.Kind
+		targetSet[key] = true
+	}
+	var result kube.ResourceList
+	for _, s := range source {
+		key := s.Name + "/" + s.Mapping.GroupVersionKind.Kind
+		if targetSet[key] {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func (i *Install) failRelease(rel *release.Release, err error) (*release.Release, error) {

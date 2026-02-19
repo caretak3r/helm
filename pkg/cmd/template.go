@@ -37,7 +37,9 @@ import (
 	"helm.sh/helm/v4/pkg/chart/common"
 	"helm.sh/helm/v4/pkg/cli/values"
 	"helm.sh/helm/v4/pkg/cmd/require"
+	"helm.sh/helm/v4/pkg/kube"
 	releaseutil "helm.sh/helm/v4/pkg/release/v1/util"
+	"helm.sh/helm/v4/pkg/sequencing"
 )
 
 const templateDesc = `
@@ -117,6 +119,14 @@ func newTemplateCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 			// We ignore a potential error here because, when the --debug flag was specified,
 			// we always want to print the YAML, even if it is not valid. The error is still returned afterwards.
 			if rel != nil {
+				// When --wait=ordered, output manifests grouped by subchart batch
+				if client.WaitStrategy == kube.OrderedStrategy && len(rel.SequencingMetadata) > 0 {
+					if outputErr := outputOrderedManifests(out, rel); outputErr != nil {
+						return outputErr
+					}
+					return err
+				}
+
 				var manifests bytes.Buffer
 				fmt.Fprintln(&manifests, strings.TrimSpace(rel.Manifest))
 				if !client.DisableHooks {
@@ -274,4 +284,39 @@ func ensureDirectoryForFile(file string) error {
 	}
 
 	return os.MkdirAll(baseDir, 0755)
+}
+
+// outputOrderedManifests writes manifests grouped by subchart batch with
+// resource-group comments per HIP-0025.
+func outputOrderedManifests(out io.Writer, rel *release.Release) error {
+	meta, err := sequencing.UnmarshalSequencingMetadata(rel.SequencingMetadata)
+	if err != nil {
+		return err
+	}
+
+	// Determine parent name from last batch
+	var parentName string
+	if len(meta.SubchartOrder) > 0 {
+		lastBatch := meta.SubchartOrder[len(meta.SubchartOrder)-1]
+		if len(lastBatch) > 0 {
+			parentName = lastBatch[0]
+		}
+	}
+
+	partitions := sequencing.PartitionBySubchart(rel.Manifest, parentName)
+
+	for batchIdx, batch := range meta.SubchartOrder {
+		groupName := strings.Join(batch, ",")
+		fmt.Fprintf(out, "## START resource-group: %s (batch %d)\n", groupName, batchIdx)
+
+		for _, name := range batch {
+			if m, ok := partitions[name]; ok {
+				fmt.Fprintf(out, "---\n%s\n", strings.TrimSpace(m))
+			}
+		}
+
+		fmt.Fprintf(out, "## END resource-group: %s (batch %d)\n\n", groupName, batchIdx)
+	}
+
+	return nil
 }

@@ -25,6 +25,7 @@ import (
 
 	"helm.sh/helm/v4/pkg/action"
 	chart "helm.sh/helm/v4/pkg/chart/v2"
+	"helm.sh/helm/v4/pkg/kube"
 	"helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
 )
@@ -120,4 +121,86 @@ func TestPostRendererFlagSetOnce(t *testing.T) {
 	// Set the plugin name again to a different value is not ok
 	err = str.Set("cat")
 	require.Error(t, err)
+}
+
+func TestWaitFlagOrdered(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+
+	err := wv.Set("ordered")
+	require.NoError(t, err)
+	require.Equal(t, kube.WaitStrategy("ordered"), ws)
+}
+
+func TestWaitFlagInvalid(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+
+	err := wv.Set("bogus")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid wait input")
+}
+
+func TestWaitFlagAllValidStrategies(t *testing.T) {
+	strategies := []struct {
+		input    string
+		expected kube.WaitStrategy
+	}{
+		{"watcher", kube.StatusWatcherStrategy},
+		{"hookOnly", kube.HookOnlyStrategy},
+		{"legacy", kube.LegacyStrategy},
+		{"ordered", kube.OrderedStrategy},
+	}
+
+	for _, tt := range strategies {
+		t.Run(tt.input, func(t *testing.T) {
+			var ws kube.WaitStrategy
+			wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+			err := wv.Set(tt.input)
+			require.NoError(t, err)
+			require.Equal(t, tt.expected, ws)
+		})
+	}
+}
+
+func TestWaitFlagDefault(t *testing.T) {
+	// Default when flag is not set should be hookOnly
+	var ws kube.WaitStrategy
+	_ = newWaitValue(kube.HookOnlyStrategy, &ws)
+	require.Equal(t, kube.HookOnlyStrategy, ws)
+}
+
+func TestWaitFlagDeprecatedBoolTrue(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+
+	err := wv.Set("true")
+	require.NoError(t, err)
+	require.Equal(t, kube.StatusWatcherStrategy, ws)
+}
+
+func TestWaitFlagDeprecatedBoolFalse(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+
+	err := wv.Set("false")
+	require.NoError(t, err)
+	require.Equal(t, kube.HookOnlyStrategy, ws)
+}
+
+func TestWaitValueType(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.HookOnlyStrategy, &ws)
+	require.Equal(t, "WaitStrategy", wv.Type())
+}
+
+func TestWaitValueString(t *testing.T) {
+	var ws kube.WaitStrategy
+	wv := newWaitValue(kube.OrderedStrategy, &ws)
+	require.Equal(t, "ordered", wv.String())
+}
+
+func TestWaitValueStringNil(t *testing.T) {
+	var wv *waitValue
+	require.Equal(t, "", wv.String())
 }

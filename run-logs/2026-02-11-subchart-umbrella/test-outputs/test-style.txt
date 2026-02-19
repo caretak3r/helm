@@ -1,0 +1,28 @@
+Warning: golangci-lint version is v2.8.0 (expected v2.5.0 from CI)
+To install the correct version, run:
+  curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.5.0
+golangci-lint run ./...
+pkg/action/upgrade.go:40:1: File is not properly formatted (gofmt)
+	"helm.sh/helm/v4/pkg/sequencing"
+^
+pkg/sequencing/dag.go:136:3: ineffectual assignment to queue (ineffassign)
+		queue = nil
+		^
+pkg/action/install.go:574:94: unused-parameter: parameter 'resources' seems to be unused, consider removing or renaming it as _ (revive)
+func (i *Install) performOrderedInstall(rel *release.Release, toBeAdopted kube.ResourceList, resources kube.ResourceList) (*release.Release, error) {
+                                                                                             ^
+pkg/action/upgrade.go:535:128: unused-parameter: parameter 'target' seems to be unused, consider removing or renaming it as _ (revive)
+func (u *Upgrade) releasingOrderedUpgrade(c chan<- resultMessage, upgradedRelease *release.Release, current kube.ResourceList, target kube.ResourceList, originalRelease *release.Release, serverSideApply bool) {
+                                                                                                                               ^
+pkg/sequencing/metadata.go:24:6: exported: type name will be used as sequencing.SequencingMetadata by other packages, and that stutters; consider calling this Metadata (revive)
+type SequencingMetadata struct {
+     ^
+pkg/sequencing/dag.go:178:4: SA4018: self-assignment of rev.edges[to] to rev.edges[to] (staticcheck)
+			rev.edges[to] = rev.edges[to]
+			^
+6 issues:
+* gofmt: 1
+* ineffassign: 1
+* revive: 3
+* staticcheck: 1
+make: *** [test-style] Error 1

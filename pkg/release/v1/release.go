@@ -16,6 +16,8 @@ limitations under the License.
 package v1
 
 import (
+	"encoding/json"
+
 	chart "helm.sh/helm/v4/pkg/chart/v2"
 	"helm.sh/helm/v4/pkg/release/common"
 )
@@ -51,6 +53,10 @@ type Release struct {
 	// ApplyMethod stores whether server-side or client-side apply was used for the release
 	// Unset (empty string) should be treated as the default of client-side apply
 	ApplyMethod string `json:"apply_method,omitempty"` // "ssa" | "csa"
+	// SequencingMetadata stores the DAG-based deployment order when --wait=ordered
+	// was used. Enables rollback to reconstruct the original deployment order.
+	// Typed as json.RawMessage to avoid coupling to pkg/sequencing.
+	SequencingMetadata json.RawMessage `json:"sequencing_metadata,omitempty"`
 }
 
 // SetStatus is a helper for setting the status on a release.

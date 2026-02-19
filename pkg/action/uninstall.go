@@ -31,6 +31,7 @@ import (
 	"helm.sh/helm/v4/pkg/release/common"
 	release "helm.sh/helm/v4/pkg/release/v1"
 	releaseutil "helm.sh/helm/v4/pkg/release/v1/util"
+	"helm.sh/helm/v4/pkg/sequencing"
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
@@ -255,6 +256,11 @@ func (e *joinedErrors) Unwrap() []error {
 
 // deleteRelease deletes the release and returns list of delete resources and manifests that were kept in the deletion process
 func (u *Uninstall) deleteRelease(rel *release.Release) (kube.ResourceList, string, []error) {
+	// If the release has sequencing metadata, delete in reverse DAG order
+	if len(rel.SequencingMetadata) > 0 {
+		return u.deleteReleaseOrdered(rel)
+	}
+
 	var errs []error
 
 	manifests := releaseutil.SplitManifests(rel.Manifest)
@@ -286,6 +292,75 @@ func (u *Uninstall) deleteRelease(rel *release.Release) (kube.ResourceList, stri
 		_, errs = u.cfg.KubeClient.Delete(resources, parseCascadingFlag(u.DeletionPropagation))
 	}
 	return resources, kept.String(), errs
+}
+
+// deleteReleaseOrdered deletes resources in reverse DAG order when sequencing
+// metadata is present (HIP-0025). Parent chart resources are deleted first,
+// then downstream subcharts in reverse topological order.
+func (u *Uninstall) deleteReleaseOrdered(rel *release.Release) (kube.ResourceList, string, []error) {
+	meta, err := sequencing.UnmarshalSequencingMetadata(rel.SequencingMetadata)
+	if err != nil {
+		return nil, "", []error{fmt.Errorf("failed to unmarshal sequencing metadata: %w", err)}
+	}
+
+	dag, err := sequencing.ReconstructDAG(meta)
+	if err != nil {
+		return nil, "", []error{fmt.Errorf("failed to reconstruct DAG from metadata: %w", err)}
+	}
+
+	// Reverse the DAG for uninstall order
+	revDAG := dag.Reverse()
+	batches, err := revDAG.TopologicalSort()
+	if err != nil {
+		return nil, "", []error{fmt.Errorf("failed to sort reverse DAG: %w", err)}
+	}
+
+	// Determine the parent name (last in original order = first in reverse)
+	var parentName string
+	if len(meta.SubchartOrder) > 0 {
+		lastBatch := meta.SubchartOrder[len(meta.SubchartOrder)-1]
+		if len(lastBatch) > 0 {
+			parentName = lastBatch[0]
+		}
+	}
+
+	partitions := sequencing.PartitionBySubchart(rel.Manifest, parentName)
+
+	var allResources kube.ResourceList
+	var allErrors []error
+	var kept strings.Builder
+
+	for _, batch := range batches {
+		var batchManifest strings.Builder
+		for _, name := range batch {
+			if m, ok := partitions[name]; ok {
+				if batchManifest.Len() > 0 {
+					batchManifest.WriteString("\n---\n")
+				}
+				batchManifest.WriteString(m)
+			}
+		}
+
+		if batchManifest.Len() == 0 {
+			continue
+		}
+
+		resources, err := u.cfg.KubeClient.Build(strings.NewReader(batchManifest.String()), false)
+		if err != nil {
+			allErrors = append(allErrors, fmt.Errorf("unable to build resources for batch %v: %w", batch, err))
+			continue
+		}
+
+		if len(resources) > 0 {
+			_, errs := u.cfg.KubeClient.Delete(resources, parseCascadingFlag(u.DeletionPropagation))
+			allErrors = append(allErrors, errs...)
+			allResources = append(allResources, resources...)
+		}
+
+		u.cfg.Logger().Debug("batch deleted", "subcharts", batch)
+	}
+
+	return allResources, kept.String(), allErrors
 }
 
 func parseCascadingFlag(cascadingFlag string) v1.DeletionPropagation {

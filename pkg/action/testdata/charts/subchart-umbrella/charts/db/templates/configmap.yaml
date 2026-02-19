@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-db
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/order: "1"
+  annotations:
+    helm.sh/depends-on: ""
+data:
+  role: database
