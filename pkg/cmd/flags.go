@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -59,7 +60,7 @@ func AddWaitFlag(cmd *cobra.Command, wait *kube.WaitStrategy) {
 	cmd.Flags().Var(
 		newWaitValue(kube.HookOnlyStrategy, wait),
 		"wait",
-		"wait until resources are ready (up to --timeout). Use '--wait' alone for 'watcher' strategy, or specify one of: 'watcher', 'hookOnly', 'legacy'. Default when flag is omitted: 'hookOnly'.",
+		"wait until resources are ready (up to --timeout). Use '--wait' alone for 'watcher' strategy, or specify one of: 'watcher', 'hookOnly', 'legacy', 'ordered'. Default when flag is omitted: 'hookOnly'. 'ordered' enables HIP-0025 sequencing.",
 	)
 	cmd.Flags().Lookup("wait").NoOptDefVal = string(kube.StatusWatcherStrategy)
 }
@@ -80,7 +81,7 @@ func (ws *waitValue) String() string {
 
 func (ws *waitValue) Set(s string) error {
 	switch s {
-	case string(kube.StatusWatcherStrategy), string(kube.LegacyStrategy), string(kube.HookOnlyStrategy):
+	case string(kube.StatusWatcherStrategy), string(kube.LegacyStrategy), string(kube.HookOnlyStrategy), string(kube.OrderedStrategy):
 		*ws = waitValue(s)
 		return nil
 	case "true":
@@ -92,12 +93,20 @@ func (ws *waitValue) Set(s string) error {
 		*ws = waitValue(kube.HookOnlyStrategy)
 		return nil
 	default:
-		return fmt.Errorf("invalid wait input %q. Valid inputs are %s, %s, and %s", s, kube.StatusWatcherStrategy, kube.HookOnlyStrategy, kube.LegacyStrategy)
+		return fmt.Errorf("invalid wait input %q. Valid inputs are %s, %s, %s, and %s", s, kube.StatusWatcherStrategy, kube.HookOnlyStrategy, kube.LegacyStrategy, kube.OrderedStrategy)
 	}
 }
 
 func (ws *waitValue) Type() string {
 	return "WaitStrategy"
+}
+
+// AddReadinessTimeoutFlag adds the --readiness-timeout flag to a command.
+// This flag controls how long to wait for custom readiness conditions (HIP-0025).
+// Must not exceed --timeout. Default: 1 minute.
+func AddReadinessTimeoutFlag(cmd *cobra.Command, readinessTimeout *time.Duration) {
+	cmd.Flags().DurationVar(readinessTimeout, "readiness-timeout", time.Minute,
+		"time to wait for custom readiness conditions per resource (HIP-0025). Must not exceed --timeout.")
 }
 
 func addChartPathOptionsFlags(f *pflag.FlagSet, c *action.ChartPathOptions) {
